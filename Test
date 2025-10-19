@@ -1,0 +1,123 @@
+"""
+Options Market Analytics - Standalone Python Version (No yfinance, No input required)
+File: options_market_analytics.py
+
+What it does:
+- Simulates option chain data without external API calls
+- Displays data tables for calls and puts in the console
+- Computes put-call parity deviation
+- Estimates historical volatility from generated price series
+- Calculates Black-Scholes Greeks and implied volatility using a pure-Python bisection
+- Generates plots using matplotlib
+
+How to run:
+1) Create a virtualenv and install dependencies:
+   pip install pandas numpy matplotlib
+
+2) Run:
+   python options_market_analytics.py
+
+Notes:
+- This version does NOT require yfinance, internet access, or console input.
+- The option data and underlying prices are randomly generated for practice and demonstration.
+"""
+
+import pandas as pd
+import numpy as np
+import datetime as dt
+import math
+import matplotlib.pyplot as plt
+
+# ------------------------- Utility functions -------------------------
+
+def _ndist(x):
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+def _ndist_pdf(x):
+    return (1.0 / math.sqrt(2 * math.pi)) * math.exp(-0.5 * x * x)
+
+def bs_price(option_type, S, K, T, r, sigma):
+    if T <= 0 or sigma <= 0:
+        return max(S - K, 0) if option_type == 'call' else max(K - S, 0)
+    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+    if option_type == 'call':
+        return S * _ndist(d1) - K * math.exp(-r * T) * _ndist(d2)
+    else:
+        return K * math.exp(-r * T) * _ndist(-d2) - S * _ndist(-d1)
+
+def bs_greeks(option_type, S, K, T, r, sigma):
+    if T <= 0 or sigma <= 0:
+        delta = 1.0 if (option_type == 'call' and S > K) else 0.0
+        delta = -1.0 if (option_type == 'put' and S < K) else delta
+        return {'delta': delta, 'gamma': 0.0, 'vega': 0.0, 'theta': 0.0}
+    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+    pdf_d1 = _ndist_pdf(d1)
+    gamma = pdf_d1 / (S * sigma * math.sqrt(T))
+    vega = S * pdf_d1 * math.sqrt(T) / 100.0
+    if option_type == 'call':
+        delta = _ndist(d1)
+        theta = (-S * pdf_d1 * sigma / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * _ndist(d2)) / 365.0
+    else:
+        delta = -_ndist(-d1)
+        theta = (-S * pdf_d1 * sigma / (2 * math.sqrt(T)) + r * K * math.exp(-r * T) * _ndist(-d2)) / 365.0
+    return {'delta': delta, 'gamma': gamma, 'vega': vega, 'theta': theta}
+
+def implied_vol_bisection(option_type, market_price, S, K, T, r, tol=1e-6, max_iter=100):
+    if market_price <= 0 or T <= 0:
+        return np.nan
+    low, high = 1e-6, 5.0
+    for i in range(max_iter):
+        mid = 0.5 * (low + high)
+        price_mid = bs_price(option_type, S, K, T, r, mid)
+        if abs(price_mid - market_price) < tol:
+            return mid
+        if price_mid > market_price:
+            high = mid
+        else:
+            low = mid
+    return 0.5 * (low + high)
+
+# ------------------------- Main Program -------------------------
+
+def main():
+    # Hardcoded ticker and simulated options data
+    ticker = "DEMO"
+    np.random.seed(42)
+    S = 100.0  # Simulated spot price
+    r = 0.05
+    expirations = [dt.date.today() + dt.timedelta(days=30)]
+    expiry_choice = expirations[0]
+    T = 30 / 365.0  # 30 days to expiry
+
+    strikes = np.arange(90, 111, 2)
+    calls = pd.DataFrame({'strike': strikes, 'lastPrice': [max(S - K + np.random.randn(), 0) for K in strikes]})
+    puts = pd.DataFrame({'strike': strikes, 'lastPrice': [max(K - S + np.random.randn(), 0) for K in strikes]})
+
+    # Compute put-call parity deviation
+    merged = calls.merge(puts, on='strike', suffixes=('_call','_put'))
+    merged['parity_diff'] = merged['lastPrice_call'] - merged['lastPrice_put'] - (S - merged['strike'] * math.exp(-r*T))
+
+    print(f"Simulated Spot Price: {S:.2f}")
+    print("Put-Call Parity Deviations:")
+    print(merged[['strike','parity_diff']])
+
+    # Simulated historical prices for volatility
+    dates = pd.date_range(end=dt.date.today(), periods=252)
+    prices = S * np.exp(np.cumsum(np.random.normal(0, 0.01, size=len(dates))))
+    hist = pd.DataFrame({'Close': prices}, index=dates)
+    hist['log_ret'] = np.log(hist['Close'] / hist['Close'].shift(1))
+    rolling_window = 21
+    hist['rolling_vol'] = hist['log_ret'].rolling(rolling_window).std() * np.sqrt(252)
+
+    plt.figure(figsize=(10,5))
+    plt.plot(hist.index, hist['rolling_vol'], label='Rolling Annualized Vol')
+    plt.title(f'{ticker} Rolling Annualized Vol ({rolling_window}-day)')
+    plt.xlabel('Date')
+    plt.ylabel('Volatility')
+    plt.legend()
+    plt.show()
+
+if __name__ == '__main__':
+    main()
